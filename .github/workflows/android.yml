@@ -67,10 +67,30 @@ jobs:
             echo "Yoga debug/ found, skipping."
           fi
 
-      - name: Create keystore
+      - name: Set up APK signing key
         run: |
-          mkdir -p ~/.android
-          keytool -genkeypair -v -keystore ~/.android/debug.keystore -keyalg RSA -keysize 2048 -validity 10000 -alias androiddebugkey -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+          # Release signing via repo secrets (KEYSTORE_B64 / KEYSTORE_PASSWORD /
+          # KEY_ALIAS / KEY_PASSWORD). cmake_android.sh -> build.sh -> build.gradle
+          # pick up TW_KEY_NAME / TW_KEY_PW / TW_KEY_ALIAS from the environment.
+          # NOTE: the build.gradle template uses TW_KEY_PW as BOTH the store and
+          # the key password, so the release keystore must have storepass == keypass.
+          if [ -n "${{ secrets.KEYSTORE_B64 }}" ]; then
+            echo "Using release keystore from secrets."
+            echo "${{ secrets.KEYSTORE_B64 }}" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            chmod 600 "$RUNNER_TEMP/release.keystore"
+            keytool -list -keystore "$RUNNER_TEMP/release.keystore" \
+              -storepass "${{ secrets.KEYSTORE_PASSWORD }}" \
+              -alias "${{ secrets.KEY_ALIAS }}" > /dev/null
+            {
+              echo "TW_KEY_NAME=$RUNNER_TEMP/release.keystore"
+              echo "TW_KEY_PW=${{ secrets.KEYSTORE_PASSWORD }}"
+              echo "TW_KEY_ALIAS=${{ secrets.KEY_ALIAS }}"
+            } >> "$GITHUB_ENV"
+          else
+            echo "No release keystore secret — falling back to debug key."
+            mkdir -p ~/.android
+            keytool -genkeypair -v -keystore ~/.android/debug.keystore -keyalg RSA -keysize 2048 -validity 10000 -alias androiddebugkey -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+          fi
 
       - name: Fix Android package folder move (mkdir parent dirs)
         run: |
@@ -87,7 +107,25 @@ jobs:
       - name: Build C++ (CMake)
         run: |
           chmod +x scripts/android/cmake_android.sh
+          echo "Signing with key: ${TW_KEY_NAME:-default debug key}, alias: ${TW_KEY_ALIAS:-androiddebugkey}"
           ./scripts/android/cmake_android.sh arm64 "DDNet-kinetix" "com.ddnet.kinetix" Release build_arch
+
+      - name: Verify APK signature
+        run: |
+          for d in "$ANDROID_HOME" "$ANDROID_SDK_ROOT" "$HOME/Android/Sdk"; do
+            if [ -n "$d" ]; then
+              APKSIGNER=$(ls "$d"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n 1)
+              [ -n "$APKSIGNER" ] && break
+            fi
+          done
+          if [ -z "${APKSIGNER:-}" ]; then echo "apksigner not found"; exit 1; fi
+          echo "Using: $APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs \
+            build_arch/*.apk build_arch/build/outputs/apk/release/*.apk | tee "$RUNNER_TEMP/verify.txt"
+          if [ -n "${TW_KEY_ALIAS:-}" ] && [ "$TW_KEY_ALIAS" != "androiddebugkey" ]; then
+            grep -q "O=FoxNet" "$RUNNER_TEMP/verify.txt" || { echo "ERROR: APK is not signed with the FoxNet release key"; exit 1; }
+            echo "Release signature OK (FoxNet)."
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
