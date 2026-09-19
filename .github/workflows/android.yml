@@ -115,13 +115,16 @@ jobs:
           for d in "$ANDROID_HOME" "$ANDROID_SDK_ROOT" "$HOME/Android/Sdk"; do
             if [ -n "$d" ]; then
               APKSIGNER=$(ls "$d"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n 1)
-              [ -n "$APKSIGNER" ] && break
+              if [ -n "$APKSIGNER" ]; then break; fi
             fi
           done
           if [ -z "${APKSIGNER:-}" ]; then echo "apksigner not found"; exit 1; fi
           echo "Using: $APKSIGNER"
-          "$APKSIGNER" verify --verbose --print-certs \
-            build_arch/*.apk build_arch/build/outputs/apk/release/*.apk | tee "$RUNNER_TEMP/verify.txt"
+          : > "$RUNNER_TEMP/verify.txt"
+          for apk in build_arch/*.apk build_arch/build/outputs/apk/release/*.apk; do
+            echo "== $apk =="
+            "$APKSIGNER" verify --verbose --print-certs "$apk" | tee -a "$RUNNER_TEMP/verify.txt"
+          done
           if [ -n "${TW_KEY_ALIAS:-}" ] && [ "$TW_KEY_ALIAS" != "androiddebugkey" ]; then
             grep -q "O=FoxNet" "$RUNNER_TEMP/verify.txt" || { echo "ERROR: APK is not signed with the FoxNet release key"; exit 1; }
             echo "Release signature OK (FoxNet)."
