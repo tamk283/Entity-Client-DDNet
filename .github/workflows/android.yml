@@ -72,6 +72,18 @@ jobs:
           mkdir -p ~/.android
           keytool -genkeypair -v -keystore ~/.android/debug.keystore -keyalg RSA -keysize 2048 -validity 10000 -alias androiddebugkey -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
 
+      - name: Fix Android package folder move (mkdir parent dirs)
+        run: |
+          # Port of the ddnetbuild fix for scripts/android/files/build.sh:
+          # `mv src/main/java/org/ddnet/client` fails when the destination
+          # parent (e.g. src/main/java/com/ddnet) does not exist.
+          # Patched here from the workflow so client sources stay untouched.
+          if ! grep -q 'mkdir -p src/main/java/"$(dirname' scripts/android/files/build.sh; then
+            sed -i 's|mv src/main/java/org/ddnet/client|mkdir -p src/main/java/"$(dirname "${APK_PACKAGE_FOLDER}")"\n\tmv src/main/java/org/ddnet/client|' scripts/android/files/build.sh
+          fi
+          grep -n -A2 'APK_PACKAGE_FOLDER}" != "org/ddnet/client"' scripts/android/files/build.sh
+          bash -n scripts/android/files/build.sh
+
       - name: Build C++ (CMake)
         run: |
           chmod +x scripts/android/cmake_android.sh
