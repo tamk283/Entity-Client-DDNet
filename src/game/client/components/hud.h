@@ -1,0 +1,342 @@
+/* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
+/* If you are missing that file, acquire a complete release at teeworlds.com.                */
+#ifndef GAME_CLIENT_COMPONENTS_HUD_H
+#define GAME_CLIENT_COMPONENTS_HUD_H
+#include "entity/hud/hud_layout.h" // EClient
+#include "entity/mediaplayer/media_player.h"
+
+#include <base/color.h>
+#include <base/vmath.h>
+
+#include <engine/client/enums.h>
+#include <engine/shared/protocol.h>
+#include <engine/textrender.h>
+
+#include <generated/protocol.h>
+
+#include <game/client/component.h>
+
+#include <cstdint>
+
+// EClient
+class CArtCropProfile
+{
+public:
+	float m_Left = 0.01f;
+	float m_Right = 0.01f;
+	float m_Top = 0.01f;
+	float m_Bottom = 0.01f;
+};
+
+struct SScoreInfo
+{
+	SScoreInfo()
+	{
+		Reset();
+	}
+
+	void Reset()
+	{
+		m_TextRankContainerIndex.Reset();
+		m_TextScoreContainerIndex.Reset();
+		m_RoundRectQuadContainerIndex = -1;
+		m_OptionalNameTextContainerIndex.Reset();
+		m_aScoreText[0] = 0;
+		m_aRankText[0] = 0;
+		m_aPlayerNameText[0] = 0;
+		m_ScoreTextWidth = 0.f;
+		m_Initialized = false;
+	}
+
+	STextContainerIndex m_TextRankContainerIndex;
+	STextContainerIndex m_TextScoreContainerIndex;
+	float m_ScoreTextWidth;
+	char m_aScoreText[16];
+	char m_aRankText[16];
+	char m_aPlayerNameText[MAX_NAME_LENGTH];
+	int m_RoundRectQuadContainerIndex;
+	STextContainerIndex m_OptionalNameTextContainerIndex;
+
+	bool m_Initialized;
+};
+
+class CHud : public CComponent
+{
+	float m_Width, m_Height;
+
+	int m_HudQuadContainerIndex;
+	SScoreInfo m_aScoreInfo[2];
+	STextContainerIndex m_FPSTextContainerIndex;
+	STextContainerIndex m_DDRaceEffectsTextContainerIndex;
+	STextContainerIndex m_PlayerAngleTextContainerIndex;
+	float m_PlayerPrevAngle;
+	STextContainerIndex m_aPlayerSpeedTextContainers[2];
+	float m_aPlayerPrevSpeed[2];
+	int m_aPlayerSpeed[2];
+	enum class ESpeedChange
+	{
+		NONE,
+		INCREASE,
+		DECREASE
+	};
+	ESpeedChange m_aLastPlayerSpeedChange[2];
+	STextContainerIndex m_aPlayerPositionContainers[2];
+	float m_aPlayerPrevPosition[2];
+
+	// EClient
+	STextContainerIndex m_PlayerCheckpointTextContainerIndex;
+	int m_PlayerPrevCheckpoint;
+
+	// EClient: compact player info
+	STextContainerIndex m_aPlayerInfoTextContainers[2]; // 0 = Position, 1 = Speed
+	vec2 m_PlayerInfoPrevPosition;
+	vec2 m_PlayerInfoPrevSpeed;
+	ColorRGBA m_aPlayerInfoPrevPositionColor[2];
+	ColorRGBA m_aPlayerInfoPrevSpeedColor[2];
+
+	void RenderCursor();
+
+	bool PreviewActive() const; // EClient: the HUD editor is asking for everything to be shown
+
+	// EClient: stand in snapshot objects for the preview. Members rather than locals, so the
+	// pointers handed to m_Snap stay valid for as long as anything could still be holding them.
+	CNetObj_GameInfo m_PreviewGameInfo = {};
+	CNetObj_SpectatorCount m_PreviewSpectatorCount = {};
+	bool HasDummyActionsBox() const; // EClient
+	int ShowFps() const; // EClient
+
+	float m_TextWidthFPS0;
+	float m_TextWidthFPS00;
+	float m_TextWidthFPS000;
+	float m_TextWidthFPS0000;
+	float m_TextWidthFPS00000;
+	void RenderFps(); // EClient: was RenderTextInfo, split so the prediction time can move on its own
+	void RenderPrediction(); // EClient
+	void RenderConnectionWarning();
+	void RenderTeambalanceWarning();
+
+	void PrepareAmmoHealthAndArmorQuads();
+	void RenderAmmoHealthAndArmor(const CNetObj_Character *pCharacter);
+
+	void PreparePlayerStateQuads();
+	void RenderPlayerState(int ClientId);
+
+	int m_LastSpectatorCountTick;
+	void RenderSpectatorCount();
+	void RenderDummyActions();
+	void RenderMovementInformation();
+
+	void UpdateMovementInformationTextContainer(STextContainerIndex &TextContainer, float FontSize, float Value, float &PrevValue);
+	void RenderMovementInformationTextContainer(STextContainerIndex &TextContainer, const ColorRGBA &Color, float X, float Y);
+
+	class CMovementInformation
+	{
+	public:
+		vec2 m_Pos;
+		vec2 m_Speed;
+		float m_Angle = 0.0f;
+	};
+	class CMovementInformation GetMovementInformation(int ClientId, int Conn) const;
+
+	float GameTimerWidth(float Size, int Time);
+	int GameTimerTime();
+
+	void RenderGameTimer(vec2 Pos, float Size, float ClipRight = -1.0f);
+	void RenderPauseNotification();
+	void RenderSuddenDeath();
+
+	float m_TextWidthScore10;
+	float m_TextWidthScore100;
+	void RenderScoreHud();
+	// EClient: the corners the score boxes were last baked with. Their rect lives in a quad
+	// container, so it has to be rebuilt when the rounding changes, the same as when the score does.
+	int m_ScoreCorners = -1;
+	int m_LastLocalClientId = -1;
+
+	void RenderSpectatorHud();
+	void RenderWarmupTimer();
+	void RenderLocalTime(float x);
+
+	static constexpr float MOVEMENT_INFORMATION_LINE_HEIGHT = 8.0f;
+
+public:
+	CHud();
+	int Sizeof() const override { return sizeof(*this); }
+
+	void ResetHudContainers();
+	void OnWindowResize() override;
+	void OnReset() override;
+	void OnRender() override;
+	void OnInit() override;
+	void OnConsoleInit() override; // EClient
+	void OnNewSnapshot() override;
+
+	// DDRace
+
+	void OnMessage(int MsgType, void *pRawMsg) override;
+	void RenderNinjaBarPos(float x, float y, float Width, float Height, float Progress, float Alpha = 1.0f);
+
+private:
+	void RenderRecord();
+	void RenderDDRaceEffects();
+	float m_TimeCpDiff;
+	float m_aPlayerRecord[NUM_DUMMIES];
+	float m_FinishTimeDiff;
+	int m_DDRaceTime;
+	int m_FinishTimeLastReceivedTick;
+	int m_TimeCpLastReceivedTick;
+	bool m_ShowFinishTime;
+
+	inline float GetMovementInformationBoxHeight();
+	inline int GetDigitsIndex(int Value, int Max);
+
+	// Quad Offsets
+	int m_aAmmoOffset[NUM_WEAPONS];
+	int m_HealthOffset;
+	int m_EmptyHealthOffset;
+	int m_ArmorOffset;
+	int m_EmptyArmorOffset;
+	int m_aCursorOffset[NUM_WEAPONS];
+	int m_FlagOffset;
+	int m_AirjumpOffset;
+	int m_AirjumpEmptyOffset;
+	int m_aWeaponOffset[NUM_WEAPONS];
+	float m_MaxWeaponHudExtent = 0.0f; // EClient: how far a rotated weapon sprite reaches from its centre
+	int m_EndlessJumpOffset;
+	int m_EndlessHookOffset;
+	int m_JetpackOffset;
+	int m_TeleportGrenadeOffset;
+	int m_TeleportGunOffset;
+	int m_TeleportLaserOffset;
+	int m_SoloOffset;
+	int m_CollisionDisabledOffset;
+	int m_HookHitDisabledOffset;
+	int m_HammerHitDisabledOffset;
+	int m_GunHitDisabledOffset;
+	int m_ShotgunHitDisabledOffset;
+	int m_GrenadeHitDisabledOffset;
+	int m_LaserHitDisabledOffset;
+	int m_DeepFrozenOffset;
+	int m_LiveFrozenOffset;
+	int m_DummyHammerOffset;
+	int m_DummyCopyOffset;
+	int m_PracticeModeOffset;
+	int m_Team0ModeOffset;
+	int m_LockModeOffset;
+
+	// EClient
+	bool CheckpointInfoEnabled();
+	bool HasMovementInformationBox();
+	bool RenderLocalTime() const;
+
+	void FreezeHelpers();
+
+	void RenderIsland();
+
+	void RenderVisualizer(const CMediaViewer::CState &State, ColorRGBA Primary, ColorRGBA Secondary, vec2 Pos, vec2 Size, int NumBands);
+
+	class CMediaIsland
+	{
+	public:
+		class CTextScrollState
+		{
+		public:
+			float m_Offset = 0.0f;
+			float m_Overflow = 0.0f;
+			float m_Progress = 0.0f;
+			float m_HoldTime = 0.0f;
+			bool m_Forward = true;
+
+			void Reset()
+			{
+				m_Offset = 0.0f;
+				m_Overflow = 0.0f;
+				m_Progress = 0.0f;
+				m_HoldTime = 0.0f;
+				m_Forward = true;
+			}
+		};
+
+		class CPosSize
+		{
+		public:
+			vec2 m_Pos = vec2();
+			vec2 m_Size = vec2();
+		};
+
+		enum class EVisualState
+		{
+			MINIMIZED,
+			EXPANDED,
+		};
+
+		EVisualState m_VisualState = EVisualState::MINIMIZED;
+		float m_AnimProgress = 0.0f; // 0.0f to 1.0f
+
+		bool m_Changed = false;
+		float m_ChangedAnim = 0.0f; // 0.0f to 1.0f, used to animate changes in the media state
+
+		CMediaViewer::CState m_CurState;
+
+		CTextScrollState m_TitleScroll;
+		CTextScrollState m_ArtistScroll;
+
+		float m_TitleTextWidth = 0.0f;
+		float m_ArtistTextWidth = 0.0f;
+		float m_SizeScale = 1.0f;
+		// The scale the cached text widths above were measured at.
+		float m_TextSizeScale = 0.0f;
+
+		// The clock placeholders are constant strings, so their widths only move when the scale
+		// they were measured at or the seconds setting does. Negative so the first pass measures.
+		float m_LocalTimeWidth = 0.0f;
+		float m_NoGameTimerLocalTimeWidth = 0.0f;
+		float m_TimeTextSizeScale = -1.0f;
+		bool m_TimeTextShowSeconds = false;
+
+		bool m_Hovered = false;
+		bool m_PrevHovered = false;
+
+		CArtCropProfile m_CropProfile;
+		CArtCropProfile m_PrevCropProfile;
+
+		// Position and size of the island rect. The album art and visualizer are placed directly
+		// from it each frame rather than animating on their own, so they cannot drift inside it.
+		CPosSize m_Rect;
+
+		bool m_Initialized = false;
+
+		void ResetPosSize()
+		{
+			m_Rect = CPosSize();
+		}
+
+		void Reset()
+		{
+			m_VisualState = EVisualState::MINIMIZED;
+			m_AnimProgress = 0.0f;
+			m_TitleScroll.Reset();
+			m_ArtistScroll.Reset();
+
+			m_Hovered = false;
+			m_PrevHovered = false;
+
+			ResetPosSize();
+		}
+
+	} m_Island;
+	vec2 m_FPSPos;
+
+	// EClient: moves and scales the elements below without touching the code that draws them
+	CHudLayout m_HudLayout;
+
+public:
+	// EClient: resolved, so that everything laying out against the island follows it when the
+	// layout moves it. Zero while it is not being drawn, which is what callers test for.
+	vec2 IslandPos() const { return m_Island.m_Rect.m_Size.x > 0.0f ? m_HudLayout.ResolvedRect(EHudElement::MEDIA_ISLAND).m_Pos : vec2(0.0f, 0.0f); }
+	vec2 IslandSize() const { return m_Island.m_Rect.m_Size.x > 0.0f ? m_HudLayout.ResolvedRect(EHudElement::MEDIA_ISLAND).m_Size : vec2(0.0f, 0.0f); }
+	vec2 FpsPos() const { return m_FPSPos; }
+	CHudLayout &HudLayout() { return m_HudLayout; } // EClient
+};
+
+#endif
