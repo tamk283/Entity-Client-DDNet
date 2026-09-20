@@ -1,0 +1,137 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25b
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          accept-android-sdk-licenses: 'true'
+          packages: 'platform-tools build-tools;34.0.0 platforms;android-34'
+
+      - name: Install Ninja, CMake and glslang-tools
+        run: sudo apt-get install -y ninja-build cmake glslang-tools
+
+      - name: Download Android SDK
+        run: |
+          chmod +x scripts/android/download_android_sdk.sh
+          ./scripts/android/download_android_sdk.sh
+
+      - name: Create checksummed_extra.txt
+        run: |
+          mkdir -p cmake
+          touch cmake/checksummed_extra.txt
+
+      - name: Clone ddnet-libs
+        run: |
+          rm -rf ddnet-libs
+          git clone --depth 1 https://github.com/ddnet/ddnet-libs.git ddnet-libs
+
+      - name: Fix Yoga
+        run: |
+          if [ ! -f src/engine/external/yoga/debug/AssertFatal.h ]; then
+            echo "Yoga missing debug/, fetching from Facebook..."
+            rm -rf src/engine/external/yoga
+            git clone --depth 1 https://github.com/facebook/yoga.git /tmp/fb-yoga
+            mv /tmp/fb-yoga/yoga src/engine/external/yoga
+            rm -rf /tmp/fb-yoga
+          else
+            echo "Yoga debug/ found, skipping."
+          fi
+
+      - name: Set up APK signing key
+        run: |
+          # Release signing via repo secrets (KEYSTORE_B64 / KEYSTORE_PASSWORD /
+          # KEY_ALIAS / KEY_PASSWORD). cmake_android.sh -> build.sh -> build.gradle
+          # pick up TW_KEY_NAME / TW_KEY_PW / TW_KEY_ALIAS from the environment.
+          # NOTE: the build.gradle template uses TW_KEY_PW as BOTH the store and
+          # the key password, so the release keystore must have storepass == keypass.
+          if [ -n "${{ secrets.KEYSTORE_B64 }}" ]; then
+            echo "Using release keystore from secrets."
+            echo "${{ secrets.KEYSTORE_B64 }}" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            chmod 600 "$RUNNER_TEMP/release.keystore"
+            keytool -list -keystore "$RUNNER_TEMP/release.keystore" \
+              -storepass "${{ secrets.KEYSTORE_PASSWORD }}" \
+              -alias "${{ secrets.KEY_ALIAS }}" > /dev/null
+            {
+              echo "TW_KEY_NAME=$RUNNER_TEMP/release.keystore"
+              echo "TW_KEY_PW=${{ secrets.KEYSTORE_PASSWORD }}"
+              echo "TW_KEY_ALIAS=${{ secrets.KEY_ALIAS }}"
+            } >> "$GITHUB_ENV"
+          else
+            echo "No release keystore secret — falling back to debug key."
+            mkdir -p ~/.android
+            keytool -genkeypair -v -keystore ~/.android/debug.keystore -keyalg RSA -keysize 2048 -validity 10000 -alias androiddebugkey -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Fix Android package folder move (mkdir parent dirs)
+        run: |
+          # scripts/android/files/build.sh runs
+          # `mv src/main/java/org/ddnet/client ...` which fails when the
+          # destination parent (e.g. src/main/java/com/foxnet) does not exist.
+          # Patched here from the workflow so client sources stay untouched.
+          if ! grep -q 'mkdir -p src/main/java/"$(dirname' scripts/android/files/build.sh; then
+            sed -i 's|mv src/main/java/org/ddnet/client|mkdir -p src/main/java/"$(dirname "${APK_PACKAGE_FOLDER}")"\n\tmv src/main/java/org/ddnet/client|' scripts/android/files/build.sh
+          fi
+          grep -n -A2 'APK_PACKAGE_FOLDER}" != "org/ddnet/client"' scripts/android/files/build.sh
+          bash -n scripts/android/files/build.sh
+
+      - name: Build C++ (CMake)
+        run: |
+          chmod +x scripts/android/cmake_android.sh
+          echo "Signing with key: ${TW_KEY_NAME:-default debug key}, alias: ${TW_KEY_ALIAS:-androiddebugkey}"
+          ./scripts/android/cmake_android.sh arm64 "Entity Client" "com.foxnet.entity" Release build_arch
+
+      - name: Verify APK signature
+        run: |
+          for d in "$ANDROID_HOME" "$ANDROID_SDK_ROOT" "$HOME/Android/Sdk"; do
+            if [ -n "$d" ]; then
+              APKSIGNER=$(ls "$d"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n 1)
+              if [ -n "$APKSIGNER" ]; then break; fi
+            fi
+          done
+          if [ -z "${APKSIGNER:-}" ]; then echo "apksigner not found"; exit 1; fi
+          echo "Using: $APKSIGNER"
+          : > "$RUNNER_TEMP/verify.txt"
+          for apk in build_arch/*.apk build_arch/build/outputs/apk/release/*.apk; do
+            echo "== $apk =="
+            "$APKSIGNER" verify --verbose --print-certs "$apk" | tee -a "$RUNNER_TEMP/verify.txt"
+          done
+          if [ -n "${TW_KEY_ALIAS:-}" ] && [ "$TW_KEY_ALIAS" != "androiddebugkey" ]; then
+            grep -q "O=FoxNet" "$RUNNER_TEMP/verify.txt" || { echo "ERROR: APK is not signed with the FoxNet release key"; exit 1; }
+            echo "Release signature OK (FoxNet)."
+          fi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: entity-apk
+          path: '**/*.apk'
